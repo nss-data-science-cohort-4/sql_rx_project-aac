@@ -12,42 +12,48 @@ highest tot_ratio for each zipcode.*/
 -population
 -county names*/
 
-WITH opioids AS (SELECT drug_name
+WITH opioids AS (SELECT drug_name, generic_name
 FROM drug
 WHERE opioid_drug_flag = 'Y'),
---don't need generic name as it returns same number of rows.
 
 TNdocs AS (SELECT npi, nppes_provider_zip5
 FROM prescriber
 WHERE nppes_provider_state = 'TN'),
 
-opioids_prescribed AS (SELECT npi, SUM(total_claim_count) AS number_prescribed
-FROM prescription
+opioids_prescribed AS (SELECT npi, SUM(total_claim_count) AS number_prescribed, COALESCE(SUM(total_claim_count_ge65),0) AS above65
+FROM prescription AS p
 JOIN opioids
 USING (drug_name)
+JOIN opioids AS o
+ON o.generic_name = p.drug_name
 GROUP BY npi),
 
-opioids_TNdocs AS (SELECT number_prescribed, nppes_provider_zip5
+opioids_TNdocs AS (SELECT number_prescribed, nppes_provider_zip5, above65
 FROM opioids_prescribed
 JOIN TNdocs
 USING (npi)),
 
-counties AS (SELECT zip, fipscounty, SUM(number_prescribed) AS number_prescribed
+counties AS (SELECT zip, fipscounty, tot_ratio, SUM(number_prescribed) AS number_prescribed, SUM(above65) AS above65,
+RANK() OVER(PARTITION BY zip ORDER BY tot_ratio DESC) AS rank_zip
 FROM zip_fips AS z
 JOIN opioids_TNdocs AS o
 ON z.zip = o.nppes_provider_zip5
-GROUP BY zip, fipscounty),
+GROUP BY zip, fipscounty, tot_ratio),
 
-counties2 AS (SELECT county, fipscounty, number_prescribed
+counties2 AS (SELECT county, fipscounty, number_prescribed, above65
 FROM fips_county
 JOIN counties
-USING (fipscounty))
+USING (fipscounty)
+WHERE rank_zip = 1)
 
-SELECT county, (number_prescribed/population) AS opioids_per_person
+SELECT county, number_prescribed, above65, population
 FROM population
 JOIN counties2
-USING (fipscounty)
-ORDER BY opioids_per_person DESC;
+USING (fipscounty);
+
+
+/*use column total_claim_count_ge65 to see counties that have a larger elderly population possibly inflating the numbers, 
+could possibly do some research on reasons elderly use opioids more frequently*/
 
 --Is there an association between rates of opioid prescriptions and overdose deaths by county?
 /*What I want...
@@ -58,55 +64,55 @@ ORDER BY opioids_per_person DESC;
 -*/
 
 
-WITH opioids AS (SELECT drug_name
+WITH opioids AS (SELECT drug_name, generic_name
 FROM drug
 WHERE opioid_drug_flag = 'Y'),
---don't need generic name as it returns same number of rows.
 
 TNdocs AS (SELECT npi, nppes_provider_zip5
 FROM prescriber
 WHERE nppes_provider_state = 'TN'),
 
-opioids_prescribed AS (SELECT npi, SUM(total_claim_count) AS number_prescribed
-FROM prescription
+opioids_prescribed AS (SELECT npi, SUM(total_claim_count) AS number_prescribed, COALESCE(SUM(total_claim_count_ge65),0) AS above65
+FROM prescription AS p
 JOIN opioids
 USING (drug_name)
+JOIN opioids AS o
+ON p.drug_name = o.generic_name
 GROUP BY npi),
 
-opioids_TNdocs AS (SELECT number_prescribed, nppes_provider_zip5
+opioids_TNdocs AS (SELECT number_prescribed, above65, nppes_provider_zip5
 FROM opioids_prescribed
 JOIN TNdocs
 USING (npi)),
 
-counties AS (SELECT zip, fipscounty, SUM(number_prescribed) AS number_prescribed
+counties AS (SELECT zip, fipscounty, SUM(number_prescribed) AS number_prescribed, SUM(above65) AS above65,
+			 RANK() OVER(PARTITION BY zip ORDER BY tot_ratio DESC) AS rank_zip
 FROM zip_fips AS z
 JOIN opioids_TNdocs AS o
 ON z.zip = o.nppes_provider_zip5
-GROUP BY zip, fipscounty),
+GROUP BY zip, fipscounty, tot_ratio),
 
-counties2 AS (SELECT county, fipscounty, number_prescribed
+counties2 AS (SELECT county, fipscounty, number_prescribed, above65
 FROM fips_county
 JOIN counties
-USING (fipscounty)),
+USING (fipscounty)
+WHERE rank_zip = 1),
 
 overdoses AS (SELECT SUM(overdose_deaths) AS deaths, fipscounty
 FROM overdose_deaths
 WHERE year = 2017
 GROUP BY fipscounty),
 
-overdoses_c AS (SELECT county, deaths
+overdoses_c AS (SELECT county, deaths, population
 FROM fips_county
 JOIN overdoses
-USING (fipscounty))
+USING (fipscounty)
+JOIN population
+USING(fipscounty))
 
-SELECT SUM(number_prescribed) AS num_prescribed, county, deaths
+SELECT county, SUM(number_prescribed) AS num_prescribed, SUM(above65) AS above65, deaths, population
 FROM overdoses_c
 JOIN counties2
 USING (county)
-GROUP BY county, deaths
-ORDER BY deaths DESC
-
-
-
-
---Is there any association between a particular type of opioid and number of overdose deaths?
+GROUP BY county, deaths, population
+ORDER BY deaths DESC;
